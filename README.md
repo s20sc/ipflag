@@ -6,7 +6,7 @@
 原生 Swift（AppKit），无第三方依赖，无 Dock 图标。
 
 <p align="center">
-  <img src="docs/demo.png" alt="ipflag 菜单栏截图" width="360">
+  <img src="pics/demo.png" alt="ipflag 菜单栏截图" width="360">
 </p>
 
 ## 构建
