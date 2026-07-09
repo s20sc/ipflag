@@ -19,6 +19,12 @@ func flagEmoji(_ code: String) -> String {
     return String(scalars)
 }
 
+/// A valid ISO 3166-1 alpha-2 code: exactly two ASCII letters. Validated before
+/// uppercasing so malformed non-ASCII input can't normalize into something usable.
+func isCountryCode(_ s: String) -> Bool {
+    s.count == 2 && s.allSatisfy { $0.isASCII && $0.isLetter }
+}
+
 // MARK: - Geolocation
 
 struct GeoResult {
@@ -37,17 +43,17 @@ enum Geo {
 
     private static let providers: [Provider] = [
         Provider(url: URL(string: "https://ipinfo.io/json")!) { json in
-            guard let cc = json["country"] as? String, !cc.isEmpty else { return nil }
+            guard let cc = json["country"] as? String, isCountryCode(cc) else { return nil }
             let ip = json["ip"] as? String ?? "—"
             return GeoResult(ip: ip, countryCode: cc)
         },
         Provider(url: URL(string: "https://ipwho.is/")!) { json in
-            guard let cc = json["country_code"] as? String, !cc.isEmpty else { return nil }
+            guard let cc = json["country_code"] as? String, isCountryCode(cc) else { return nil }
             let ip = json["ip"] as? String ?? "—"
             return GeoResult(ip: ip, countryCode: cc)
         },
         Provider(url: URL(string: "https://api.ip.sb/geoip")!) { json in
-            guard let cc = json["country_code"] as? String, !cc.isEmpty else { return nil }
+            guard let cc = json["country_code"] as? String, isCountryCode(cc) else { return nil }
             let ip = json["ip"] as? String ?? "—"
             return GeoResult(ip: ip, countryCode: cc)
         },
@@ -55,7 +61,10 @@ enum Geo {
 
     static func fetch() async -> GeoResult? {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 8
+        // Shorter per-request timeout keeps worst-case fallback latency (3
+        // providers) bounded to ~12s on a blackholed network.
+        config.timeoutIntervalForRequest = 4
+        config.timeoutIntervalForResource = 6
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         let session = URLSession(configuration: config)
 
@@ -65,7 +74,11 @@ enum Geo {
                 req.setValue("application/json", forHTTPHeaderField: "Accept")
                 req.setValue("ipflag/1.0", forHTTPHeaderField: "User-Agent")
                 let (data, response) = try await session.data(for: req)
+                // Only trust an HTTPS response that stayed on the expected host,
+                // so a redirect can't send our request somewhere unexpected.
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                      http.url?.scheme?.lowercased() == "https",
+                      http.url?.host == provider.url.host,
                       let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let result = provider.parse(obj)
                 else { continue }
@@ -96,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var isFetching = false
     private var lastResult: GeoResult?
+    /// Monotonic id so a slow in-flight fetch can't overwrite a newer one.
+    private var requestGeneration = 0
+    /// When the last fetch was started, used to throttle menu-open refreshes.
+    private var lastFetchAt: Date?
+    private let menuRefreshMinInterval: TimeInterval = 60
 
     // Menu items whose content we update.
     private let ipItem = NSMenuItem(title: "IP: —", action: nil, keyEquivalent: "")
@@ -169,13 +187,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func refresh(force: Bool = false) {
         if isFetching && !force { return }
         isFetching = true
+        lastFetchAt = Date()
+        requestGeneration += 1
+        let generation = requestGeneration
         Task { [weak self] in
             let result = await Geo.fetch()
-            self?.apply(result)
+            self?.apply(result, generation: generation)
         }
     }
 
-    private func apply(_ result: GeoResult?) {
+    private func apply(_ result: GeoResult?, generation: Int) {
+        // Ignore completions from a fetch that a newer request has superseded.
+        guard generation == requestGeneration else { return }
         isFetching = false
         guard let result else {
             // Keep the last known flag if we have one; otherwise show a warning.
@@ -196,23 +219,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Launch at login
 
     private func syncLaunchItemState() {
-        let registered = SMAppService.mainApp.status == .enabled
-        launchItem.state = registered ? .on : .off
+        launchItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    }
+
+    private func showLaunchAlert(_ title: String, _ info: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = info
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
+            switch service.status {
+            case .enabled:
+                try service.unregister()
+            case .requiresApproval:
+                // Registered, but the user must approve it in System Settings.
+                SMAppService.openSystemSettingsLoginItems()
+                showLaunchAlert(
+                    "需要在系统设置里批准",
+                    "已请求开机自启，但需你在「系统设置 › 通用 › 登录项」中允许 ipflag 后生效。"
+                )
+            case .notRegistered, .notFound:
+                try service.register()
+            @unknown default:
+                try service.register()
             }
         } catch {
-            let alert = NSAlert()
-            alert.messageText = "无法修改开机自启设置"
-            alert.informativeText = "\(error.localizedDescription)\n\n如果反复失败，可把 ipflag.app 移动到「应用程序」后重试。"
-            alert.alertStyle = .warning
-            alert.runModal()
+            showLaunchAlert(
+                "无法修改开机自启设置",
+                "\(error.localizedDescription)\n\n如果反复失败，可把 ipflag.app 移动到「应用程序」后重试。"
+            )
         }
         syncLaunchItemState()
     }
@@ -221,6 +261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         syncLaunchItemState()
+        // Avoid hitting the geolocation providers on every menu open; only
+        // refresh if the last fetch is older than the freshness window.
+        if let last = lastFetchAt, Date().timeIntervalSince(last) < menuRefreshMinInterval {
+            return
+        }
         refresh()
     }
 }
