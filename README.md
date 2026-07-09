@@ -1,51 +1,59 @@
 # ipflag
 
-一个 macOS 菜单栏小工具：在菜单栏显示当前公网 IP 所在国家的国旗 emoji。
-切换 VPN 或更换网络时会自动更新。
+A macOS menu-bar utility that shows the flag emoji of the country your current
+public IP is in. It updates automatically when you switch VPN or change networks.
 
-原生 Swift（AppKit），无第三方依赖，无 Dock 图标。
+Native Swift (AppKit), no third-party dependencies, no Dock icon.
 
 <p align="center">
-  <img src="pics/demo.png" alt="ipflag 菜单栏截图" width="360">
+  <img src="pics/demo.png" alt="ipflag menu-bar screenshot" width="360">
 </p>
 
-## 构建
+<p align="center"><b>English</b> | <a href="README.zh-CN.md">中文</a></p>
+
+## Build
 
 ```bash
 ./build.sh
 ```
 
-生成 `build/ipflag.app`。
+Produces `build/ipflag.app`.
 
-## 运行
+## Run
 
 ```bash
 open build/ipflag.app
 ```
 
-菜单栏会先显示 🌐，几秒后变成当前所在国家的国旗（如 🇯🇵）。
+The menu bar shows 🌐 first, then switches to your current country's flag
+(e.g. 🇯🇵). Click the icon for the menu:
 
-点击图标展开菜单：
+- **IP / Country** — current public IP and country (localized name + 2-letter code), read-only
+- **Refresh now** — re-locate manually
+- **Launch at login** — start automatically at login (toggle)
+- **Quit** — close the app
 
-- **IP / 国家** — 当前公网 IP 与国家（中文名 + 两位代码），只读
-- **立即刷新** — 手动重新定位
-- **开机自启** — 登录时自动启动（勾选切换）
-- **退出** — 关闭程序
+## How it works
 
-## 工作原理
+1. Queries HTTPS geolocation providers in order (`ipinfo.io` → `ipwho.is` →
+   `api.ip.sb`) and uses the first that succeeds, so one provider being down or
+   rate-limited doesn't break the app. Returns the public IP and 2-letter country code.
+2. The country code is turned into Regional Indicator symbols — the flag emoji.
+3. The localized country name comes from the system `Locale`, no API needed.
+4. Refresh triggers: on launch, every 15 minutes, on network path changes
+   (`NWPathMonitor` — VPN / Wi-Fi switches), and when the menu opens (only
+   re-locates if the last request was more than 60 s ago, to avoid hammering the
+   providers).
 
-1. 依次请求 HTTPS 定位服务（`ipinfo.io` → `ipwho.is` → `api.ip.sb`），
-   任一成功即用，拿到公网 IP 和两位国家代码。
-2. 国家代码转成 Regional Indicator，即国旗 emoji。
-3. 国家中文名由系统 `Locale` 本地生成，不依赖接口。
-4. 刷新时机：启动时、每 15 分钟一次、网络路径变化时
-   （`NWPathMonitor`，切 VPN / 换 Wi-Fi 都会触发），以及打开菜单时
-   （距上次请求超过 60 秒才会重新定位，避免频繁点菜单反复打接口）。
+## Notes
 
-## 说明
+- **Privacy**: IP geolocation sends your public IP to the providers above — this
+  is inherent to IP-based location.
+- **Launch at login**: uses `SMAppService`. A locally / ad-hoc-signed app can
+  usually still register; if it doesn't stick, move `ipflag.app` to Applications
+  and retry. Manage it under System Settings › General › Login Items.
+- System frameworks used: `AppKit`, `Foundation`, `Network`, `ServiceManagement`.
 
-- **隐私**：IP 定位需要把你的公网 IP 发给上述服务商，这是 IP 定位的固有特性。
-- **开机自启**：使用 `SMAppService`。本地未签名/临时签名的 App 一般也能注册；
-  若不生效，把 `ipflag.app` 移动到「应用程序」后再试。可在
-  「系统设置 › 通用 › 登录项」中查看/管理。
-- 依赖的系统框架：`AppKit`、`Foundation`、`Network`、`ServiceManagement`。
+## License
+
+[MIT](LICENSE)
