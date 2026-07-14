@@ -5,11 +5,16 @@ import ServiceManagement
 
 // MARK: - Country code → flag emoji
 
+/// Emoji shown in place of the default national flag for specific codes.
+let flagOverrides: [String: String] = ["TW": "🏝️"]
+
 /// Turn a 2-letter ISO 3166-1 alpha-2 code into its flag emoji by mapping each
 /// letter to its Regional Indicator Symbol (U+1F1E6 is 'A').
 func flagEmoji(_ code: String) -> String {
     let cc = code.uppercased()
     guard cc.count == 2, cc.allSatisfy({ $0.isLetter && $0.isASCII }) else { return "🏳️" }
+    // Display overrides: show a desert-island glyph instead of a national flag.
+    if let override = flagOverrides[cc] { return override }
     let base: UInt32 = 0x1F1E6
     var scalars = String.UnicodeScalarView()
     for ch in cc.unicodeScalars {
